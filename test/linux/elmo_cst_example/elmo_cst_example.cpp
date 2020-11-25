@@ -15,6 +15,25 @@ void CspTest(std::string &ifname); //csp测试
 #define EC_TIMEOUTMON 500
 #define INITIAL_POS 0
 
+/**
+ * helper macros
+ */
+#define READ(slaveId, idx, sub, buf, comment)                                                                                                                        \
+    {                                                                                                                                                                \
+        buf = 0;                                                                                                                                                     \
+        int __s = sizeof(buf);                                                                                                                                       \
+        int __ret = ec_SDOread(slaveId, idx, sub, FALSE, &__s, &buf, EC_TIMEOUTRXM);                                                                                 \
+        printf("Slave: %d - Read at 0x%04x:%d => wkc: %d; data: 0x%.*x (%d)\t[%s]\n", slaveId, idx, sub, __ret, __s, (unsigned int)buf, (unsigned int)buf, comment); \
+    }
+
+#define WRITE(slaveId, idx, sub, buf, value, comment)                                                                                         \
+    {                                                                                                                                         \
+        int __s = sizeof(buf);                                                                                                                \
+        buf = value;                                                                                                                          \
+        int __ret = ec_SDOwrite(slaveId, idx, sub, FALSE, __s, &buf, EC_TIMEOUTRXM);                                                          \
+        printf("Slave: %d - Write at 0x%04x:%d => wkc: %d; data: 0x%.*x\t{%s}\n", slaveId, idx, sub, __ret, __s, (unsigned int)buf, comment); \
+    }
+
 /* 全局变量 */
 char IOmap[4096];
 pthread_t thread1;
@@ -81,8 +100,79 @@ void CspTest(std::string &ifname)
                ec_slave[i].state, ec_slave[i].pdelay, ec_slave[i].hasdc, ec_slave[i].CoEdetails & ECT_COEDET_SDOCA ? "true" : "false");
 
         /** CompleteAccess disabled for Elmo driver */
-        // ec_slave[i].CoEdetails ^= ECT_COEDET_SDOCA; //异或操作可以对应1的位置取反，对应0的位置不变，不知道作用是什么
+        // ec_slave[i].CoEdetails ^= ECT_COEDET_SDOCA; //TODO: 异或操作可以对应1的位置取反，对应0的位置不变，不知道作用是什么？
     }
+
+    /* 检查slave状态是否全部为Pre-Op */
+    if (ec_statecheck(0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE) != EC_STATE_PRE_OP)
+    {
+        cout << "EtherCAT state is not Pre-Op" << endl;
+        return;
+    }
+    else
+        cout << "EtherCAT state is Pre-Op" << endl;
+
+    if (ec_configdc() == FALSE) // Locate DC slaves, measure propagation delays.
+        cout << "Config DC Failed!" << endl;
+    else
+        cout << "Config DC Succeeded!" << endl;
+
+    /** set PDO mapping */
+    /** opMode: 8  => Position profile */
+
+    uint32 buf32;
+    uint16 buf16;
+    uint8 buf8;
+
+    for (int i = 1; i <= ec_slavecount; i++)
+    {
+        WRITE(i, 0x6060, 0, buf8, 8, "OpMode");
+        READ(i, 0x6061, 0, buf8, "OpMode display");
+
+        READ(i, 0x1c12, 0, buf32, "rxPDO:0");
+        READ(i, 0x1c13, 0, buf32, "txPDO:0");
+
+        READ(i, 0x1c12, 1, buf32, "rxPDO:1");
+        READ(i, 0x1c13, 1, buf32, "txPDO:1");
+    }
+
+    int32 ob2;
+    int os;
+
+    for (int i = 1; i <= ec_slavecount; i++)
+    {
+        /* Map velocity PDO assignment via Complete Access*/
+        uint16 map_1c12[4] = {0x0003, 0x1601, 0x1602, 0x1604};
+        uint16 map_1c13[3] = {0x0002, 0x1a01, 0x1a03};
+
+        ec_SDOwrite(i, 0x1c12, 0x00, TRUE, sizeof(map_1c12), &map_1c12, EC_TIMEOUTSAFE);
+        ec_SDOwrite(i, 0x1c13, 0x00, TRUE, sizeof(map_1c13), &map_1c13, EC_TIMEOUTSAFE);
+
+        // os = sizeof(ob2);
+        // ob2 = 0x16020001;
+        // ec_SDOwrite(i, 0x1c12, 0, TRUE, os, &ob2, EC_TIMEOUTRXM);
+        // os = sizeof(ob2);
+        // ob2 = 0x1a020001;
+        // ec_SDOwrite(i, 0x1c13, 0, TRUE, os, &ob2, EC_TIMEOUTRXM);
+
+        READ(i, 0x1c12, 0, buf32, "rxPDO:0");
+        READ(i, 0x1c13, 0, buf32, "txPDO:0");
+
+        READ(i, 0x1c12, 1, buf32, "rxPDO:1");
+        READ(i, 0x1c13, 1, buf32, "txPDO:1");
+    }
+
+    /** if CA disable => automapping works (TODO: 如果没有这句话，驱动器状态不会变成Safe-Op，不知道为什么) */
+    ec_config_map(&IOmap);
+
+    /* 检查slave状态是否全部为Safe-Op */
+    if (ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE) != EC_STATE_SAFE_OP)
+    {
+        cout << "EtherCAT state is not Safe-Op" << endl;
+        return;
+    }
+    else
+        cout << "EtherCAT state is Safe-Op" << endl;
 
     /* strop SOEM, close socket */
     ec_close();
