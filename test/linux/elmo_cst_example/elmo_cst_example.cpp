@@ -4,6 +4,7 @@
 #include <sys/time.h> //系统时间函数
 #include <pthread.h>  // 线程函数
 #include <unistd.h>
+#include <math.h>
 
 #include <ethercat.h> // soem 头文件 里面包含了相关头文件
 
@@ -14,6 +15,20 @@ void CspTest(std::string &ifname); //csp测试
 /* 宏定义 */
 #define EC_TIMEOUTMON 500
 #define INITIAL_POS 0
+
+struct PositionOut
+{
+    int32 targetPosition;
+    int32 digitalOutputs;
+    int16 controlWord;
+};
+
+struct PositionIn
+{
+    int32 positionActualValue;
+    int32 digitalInputs;
+    int16 statusWord;
+};
 
 /**
  * helper macros
@@ -32,6 +47,12 @@ void CspTest(std::string &ifname); //csp测试
         buf = value;                                                                                                                          \
         int __ret = ec_SDOwrite(slaveId, idx, sub, FALSE, __s, &buf, EC_TIMEOUTRXM);                                                          \
         printf("Slave: %d - Write at 0x%04x:%d => wkc: %d; data: 0x%.*x\t{%s}\n", slaveId, idx, sub, __ret, __s, (unsigned int)buf, comment); \
+    }
+
+#define CHECKERROR(slaveId)                                                                                                                                                                       \
+    {                                                                                                                                                                                             \
+        ec_readstate();                                                                                                                                                                           \
+        printf("EC> \"%s\" %x - %x [%s] \n", (char *)ec_elist2string(), ec_slave[slaveId].state, ec_slave[slaveId].ALstatuscode, (char *)ec_ALstatuscode2string(ec_slave[slaveId].ALstatuscode)); \
     }
 
 /* 全局变量 */
@@ -142,8 +163,8 @@ void CspTest(std::string &ifname)
     for (int i = 1; i <= ec_slavecount; i++)
     {
         /* Map velocity PDO assignment via Complete Access*/
-        uint16 map_1c12[4] = {0x0003, 0x1601, 0x1602, 0x1604};
-        uint16 map_1c13[3] = {0x0002, 0x1a01, 0x1a03};
+        uint16 map_1c12[4] = {0x0001, 0x1600};
+        uint16 map_1c13[3] = {0x0001, 0x1a00};
 
         ec_SDOwrite(i, 0x1c12, 0x00, TRUE, sizeof(map_1c12), &map_1c12, EC_TIMEOUTSAFE);
         ec_SDOwrite(i, 0x1c13, 0x00, TRUE, sizeof(map_1c13), &map_1c13, EC_TIMEOUTSAFE);
@@ -173,6 +194,143 @@ void CspTest(std::string &ifname)
     }
     else
         cout << "EtherCAT state is Safe-Op" << endl;
+
+    printf("Request operational state for all slaves\n");
+    expectedWKC = (ec_group[0].outputsWKC * 2) + ec_group[0].inputsWKC;
+    printf("Calculated workcounter %d\n", expectedWKC);
+
+    /** going operational */
+    ec_slave[0].state = EC_STATE_OPERATIONAL;
+    /* To enter state OP we need to send valid data to outputs. The EtherCAT frame handling is split into ec_send_processdata and ec_receive_processdata. */
+    /* send one valid process data to make outputs in slaves happy*/
+    int wkc = ec_send_processdata();
+    cout << "ec_send_processdata returned wkc is: " << wkc << endl;
+    wkc = ec_receive_processdata(EC_TIMEOUTRET);
+    cout << "ec_receive_processdata returned wkc is: " << wkc << endl; //此处wkc为1，是因为处于Safe-Op，从站只能Tx
+
+    for (int i = 1; i <= ec_slavecount; i++)
+    {
+        READ(i, 0x6083, 0, buf32, "Profile acceleration");
+        READ(i, 0x6084, 0, buf32, "Profile deceleration");
+        READ(i, 0x6085, 0, buf32, "Quick stop deceleration");
+    }
+
+    /* request OP state for all slaves */
+    ec_writestate(0); //将ec_slave[i].state状态写入各个slave
+    int chk = 40;
+    /* wait for all slaves to reach OP state */
+    do
+    {
+        ec_send_processdata();
+        ec_receive_processdata(EC_TIMEOUTRET);
+        ec_statecheck(0, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+    } while (chk-- && (ec_slave[0].state != EC_STATE_OPERATIONAL));
+
+    if (ec_slave[0].state == EC_STATE_OPERATIONAL)
+    {
+        cout << "Operational state reached for all slaves." << endl;
+    }
+    else
+    {
+        cout << "Not all slaves reached operational state." << endl;
+        return;
+    }
+
+    /**
+     * Drive state machine transistions
+     *   0 -> 6 -> 7 -> 15
+     */
+    for (int i = 1; i <= ec_slavecount; i++)
+    {
+        READ(i, 0x6041, 0, buf16, "*status word*");
+        if (buf16 == 0x218)
+        {
+            WRITE(i, 0x6040, 0, buf16, 128, "*control word*");
+            usleep(100000);
+            READ(i, 0x6041, 0, buf16, "*status word*");
+        }
+
+        WRITE(i, 0x6040, 0, buf16, 0, "*control word*");
+        usleep(100000);
+        READ(i, 0x6041, 0, buf16, "*status word*");
+
+        WRITE(i, 0x6040, 0, buf16, 6, "*control word*");
+        usleep(100000);
+        READ(i, 0x6041, 0, buf16, "*status word*");
+
+        WRITE(i, 0x6040, 0, buf16, 7, "*control word*");
+        usleep(100000);
+        READ(i, 0x6041, 0, buf16, "*status word*");
+
+        WRITE(i, 0x6040, 0, buf16, 15, "*control word*");
+        usleep(100000);
+        READ(i, 0x6041, 0, buf16, "*status word*");
+
+        CHECKERROR(i);
+        // READ(i, 0x1a0b, 0, buf32, "OpMode Display PDO Mappings");
+        READ(i, 0x6061, 0, buf8, "OpMode Display");
+
+        READ(i, 0x6071, 0, buf16, "Target Torque");
+        READ(i, 0x60B2, 0, buf16, "Torque Offset");
+        READ(i, 0x6087, 0, buf16, "Torque Slope");
+        READ(i, 0x6064, 0, buf32, "Position Actual Value");
+
+        READ(i, 0x1001, 0, buf8, "Error");
+    }
+
+    cout << "ec_state is: " << ec_statecheck(0, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE) << endl;
+
+    /* 可以开始工作了 */
+    PositionOut *target = (struct PositionOut *)(ec_slave[1].outputs);
+    PositionIn *val = (struct PositionIn *)(ec_slave[1].inputs);
+
+    while (1)
+    {
+        /** PDO I/O refresh */
+        ec_send_processdata();
+        wkc = ec_receive_processdata(EC_TIMEOUTRET);
+        // cout << "wkc is: " << wkc << endl;
+        if (wkc < expectedWKC)
+            return;
+
+        switch (target->controlWord)
+        {
+        case 0:
+            printf("control word is 0\r\n");
+            target->controlWord = 6;
+            break;
+        case 6:
+            printf("control word is 6\r\n");
+            target->controlWord = 7;
+            break;
+        case 7:
+            printf("control word is 7\r\n");
+            target->controlWord = 15;
+            break;
+        case 128:
+            printf("control word is 128\n");
+            target->controlWord = 0;
+            break;
+        default:
+            if (val->statusWord >> 3 & 0x01)
+            {
+                READ(1, 0x1001, 0, buf8, "Error");
+                target->controlWord = 128;
+            }
+        }
+
+        static int i = target->targetPosition;
+        if ((val->statusWord & 0x0fff) == 0x0237)
+        {
+            target->targetPosition = i++;
+            // i = i + 200;
+        }
+
+        printf("Position target is: %d, Position actual is: %d", target->targetPosition, val->positionActualValue);
+        printf("\r");
+
+        // usleep(1000);
+    }
 
     /* strop SOEM, close socket */
     ec_close();
