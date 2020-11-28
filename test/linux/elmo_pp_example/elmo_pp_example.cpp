@@ -147,7 +147,7 @@ void CspTest(std::string &ifname)
 
     for (int i = 1; i <= ec_slavecount; i++)
     {
-        WRITE(i, 0x6060, 0, buf8, 8, "OpMode");
+        WRITE(i, 0x6060, 0, buf8, 1, "OpMode");
         READ(i, 0x6061, 0, buf8, "OpMode display");
 
         READ(i, 0x1c12, 0, buf32, "rxPDO:0");
@@ -210,9 +210,23 @@ void CspTest(std::string &ifname)
 
     for (int i = 1; i <= ec_slavecount; i++)
     {
+        WRITE(i, 0x6081, 0, buf32, 10000, "Profile velocity");
+        WRITE(i, 0x607F, 0, buf32, 100000, "Max profile velocity");
+
+        WRITE(i, 0x6083, 0, buf32, 4000, "Profile acceleration");
+        WRITE(i, 0x6084, 0, buf32, 4000, "Profile deceleration");
+
+        WRITE(i, 0x60C5, 0, buf32, 10000, "Max acceleration");
+        WRITE(i, 0x60C6, 0, buf32, 10000, "Max deceleration");
+
+        READ(i, 0x6081, 0, buf32, "Profile velocity");
+        READ(i, 0x607F, 0, buf32, "Max profile velocity");
+
         READ(i, 0x6083, 0, buf32, "Profile acceleration");
         READ(i, 0x6084, 0, buf32, "Profile deceleration");
-        READ(i, 0x6085, 0, buf32, "Quick stop deceleration");
+
+        READ(i, 0x60C5, 0, buf32, "Max acceleration");
+        READ(i, 0x60C6, 0, buf32, "Max deceleration");
     }
 
     /* request OP state for all slaves */
@@ -270,11 +284,6 @@ void CspTest(std::string &ifname)
         // READ(i, 0x1a0b, 0, buf32, "OpMode Display PDO Mappings");
         READ(i, 0x6061, 0, buf8, "OpMode Display");
 
-        READ(i, 0x6071, 0, buf16, "Target Torque");
-        READ(i, 0x60B2, 0, buf16, "Torque Offset");
-        READ(i, 0x6087, 0, buf16, "Torque Slope");
-        READ(i, 0x6064, 0, buf32, "Position Actual Value");
-
         READ(i, 0x1001, 0, buf8, "Error");
     }
 
@@ -283,6 +292,9 @@ void CspTest(std::string &ifname)
     /* 可以开始工作了 */
     PositionOut *target = (struct PositionOut *)(ec_slave[1].outputs);
     PositionIn *val = (struct PositionIn *)(ec_slave[1].inputs);
+
+    int posss = 0;
+    int reachedIntial = 0;
 
     while (1)
     {
@@ -296,15 +308,15 @@ void CspTest(std::string &ifname)
         switch (target->controlWord)
         {
         case 0:
-            printf("control word is 0\r\n");
+            printf("control word is 0\n");
             target->controlWord = 6;
             break;
         case 6:
-            printf("control word is 6\r\n");
+            printf("control word is 6\n");
             target->controlWord = 7;
             break;
         case 7:
-            printf("control word is 7\r\n");
+            printf("control word is 7\n");
             target->controlWord = 15;
             break;
         case 128:
@@ -319,17 +331,18 @@ void CspTest(std::string &ifname)
             }
         }
 
-        static int i = target->targetPosition;
-        if ((val->statusWord & 0x0fff) == 0x0237)
+        if ((val->statusWord & 0x0fff) == 0x0237 && (reachedIntial == 0))
         {
-            target->targetPosition = i++;
+            target->controlWord |= 0x10;
+            target->targetPosition = 150000;
+            reachedIntial = 1;
             // i = i + 200;
         }
 
         printf("Position target is: %d, Position actual is: %d", target->targetPosition, val->positionActualValue);
         printf("\r");
 
-        // usleep(1000);
+        usleep(1000);
     }
 
     /* strop SOEM, close socket */
