@@ -147,7 +147,7 @@ void CspTest(std::string &ifname)
 
     for (int i = 1; i <= ec_slavecount; i++)
     {
-        WRITE(i, 0x6060, 0, buf8, 1, "OpMode");
+        WRITE(i, 0x6060, 0, buf8, 8, "OpMode"); //配置模式 8->csp
         READ(i, 0x6061, 0, buf8, "OpMode display");
 
         READ(i, 0x1c12, 0, buf32, "rxPDO:0");
@@ -186,6 +186,16 @@ void CspTest(std::string &ifname)
     /** if CA disable => automapping works (TODO: 如果没有这句话，驱动器状态不会变成Safe-Op，不知道为什么) */
     ec_config_map(&IOmap);
 
+    /** disable heartbeat alarm */
+    for (int i = 1; i <= ec_slavecount; i++)
+    {
+        // READ(i, 0x10F1, 2, buf32, "Heartbeat?"); //0x10F1 DS301-p215
+        // WRITE(i, 0x10F1, 2, buf32, 1, "Heartbeat");
+
+        WRITE(i, 0x60c2, 1, buf8, 2, "Time period");
+        WRITE(i, 0x2f75, 0, buf16, 10, "Interpolation timeout");
+    }
+
     /* 检查slave状态是否全部为Safe-Op */
     if (ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE) != EC_STATE_SAFE_OP)
     {
@@ -216,17 +226,22 @@ void CspTest(std::string &ifname)
         // WRITE(i, 0x6083, 0, buf32, 4000, "Profile acceleration");
         // WRITE(i, 0x6084, 0, buf32, 4000, "Profile deceleration");
 
-        WRITE(i, 0x60C5, 0, buf32, 100000, "Max acceleration"); //Max acceleration和Max deceleration是必须设置的
-        WRITE(i, 0x60C6, 0, buf32, 100000, "Max deceleration");
+        // WRITE(i, 0x60C5, 0, buf32, 10000, "Max acceleration");
+        // WRITE(i, 0x60C6, 0, buf32, 10000, "Max deceleration");
 
-        READ(i, 0x6081, 0, buf32, "Profile velocity");
-        READ(i, 0x607F, 0, buf32, "Max profile velocity");
+        // READ(i, 0x6081, 0, buf32, "Profile velocity");
+        // READ(i, 0x607F, 0, buf32, "Max profile velocity");
 
-        READ(i, 0x6083, 0, buf32, "Profile acceleration");
-        READ(i, 0x6084, 0, buf32, "Profile deceleration");
+        // READ(i, 0x6083, 0, buf32, "Profile acceleration");
+        // READ(i, 0x6084, 0, buf32, "Profile deceleration");
 
-        READ(i, 0x60C5, 0, buf32, "Max acceleration");
-        READ(i, 0x60C6, 0, buf32, "Max deceleration");
+        // READ(i, 0x60C5, 0, buf32, "Max acceleration");
+        // READ(i, 0x60C6, 0, buf32, "Max deceleration");
+
+        // READ(i, 0x60C2, 0, buf32, "Max deceleration");
+
+        READ(i, 0x1c32, 2, buf32, "SM2 Cycle Time");
+        READ(i, 0x1c33, 2, buf32, "SM3 Cycle Time");
     }
 
     /* request OP state for all slaves */
@@ -308,19 +323,20 @@ void CspTest(std::string &ifname)
         switch (target->controlWord)
         {
         case 0:
-            printf("control word is 0\n");
+            cout << "control word is 0" << endl;
             target->controlWord = 6;
             break;
         case 6:
-            printf("control word is 6\n");
+            cout << "control word is 6" << endl;
             target->controlWord = 7;
             break;
         case 7:
-            printf("control word is 7\n");
+            cout << "control word is 7" << endl;
             target->controlWord = 15;
+            // usleep(100000);
             break;
         case 128:
-            printf("control word is 128\n");
+            cout << "control word is 128" << endl;
             target->controlWord = 0;
             break;
         default:
@@ -331,15 +347,14 @@ void CspTest(std::string &ifname)
             }
         }
 
-        if ((val->statusWord & 0x0fff) == 0x0237 && (reachedIntial == 0))
+        if ((val->statusWord & 0x0fff) == 0x0237)
         {
-            target->controlWord |= 0x10;
-            target->targetPosition = 150000;
-            reachedIntial = 1;
-            // i = i + 200;
+            // target->controlWord |= 0x10;
+            target->targetPosition = val->positionActualValue + 100;
+            posss += 200;
         }
 
-        printf("Position target is: %d, Position actual is: %d", target->targetPosition, val->positionActualValue);
+        printf("Position target is: %d, Position actual is: %d, Control word is: 0x%x, Status word is: 0x%x               ", target->targetPosition, val->positionActualValue, target->controlWord, val->statusWord);
         printf("\r");
 
         usleep(1000);
